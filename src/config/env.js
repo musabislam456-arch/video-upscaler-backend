@@ -19,9 +19,18 @@ function nonNegativeInt(value, fallback, label) {
   return parsed;
 }
 
+function normalizeOrigin(value) {
+  return String(value || "").trim().replace(/\/$/, "");
+}
+
 const origins = (process.env.FRONTEND_ORIGINS || "http://localhost:3000")
   .split(",")
-  .map((item) => item.trim())
+  .map(normalizeOrigin)
+  .filter(Boolean);
+
+const originPatterns = (process.env.FRONTEND_ORIGIN_PATTERNS || "")
+  .split(",")
+  .map(normalizeOrigin)
   .filter(Boolean);
 
 const tempDir = process.env.TEMP_DIR || "./storage/jobs";

@@ -20,7 +20,16 @@ export function createApp({ jobService, queue }) {
   app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
   app.use(cors({
     origin(origin, callback) {
-      if (!origin || env.frontendOrigins.includes(origin)) return callback(null, true);
+      const normalizedOrigin = String(origin || "").replace(/\/$/, "");
+      const exactAllowed = !normalizedOrigin || env.frontendOrigins.includes(normalizedOrigin);
+      const patternAllowed = normalizedOrigin && env.frontendOriginPatterns.some((pattern) => {
+        if (pattern === "*") return true;
+        if (pattern.startsWith("*.")) return normalizedOrigin.endsWith(pattern.slice(1));
+        if (pattern.endsWith(".*")) return normalizedOrigin.startsWith(pattern.slice(0, -1));
+        return normalizedOrigin === pattern;
+      });
+      if (exactAllowed || patternAllowed) return callback(null, true);
+      logger.warn("cors_origin_rejected", { origin: normalizedOrigin, allowedOrigins: env.frontendOrigins, allowedPatterns: env.frontendOriginPatterns });
       return callback(new AppError(403, "CORS_ORIGIN_NOT_ALLOWED", "Origin is not allowed by the API CORS policy."));
     },
     methods: ["GET", "POST", "OPTIONS"],
