@@ -1,0 +1,83 @@
+openapi: 3.0.3
+info:
+  title: Video Upscaler API
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: Service is healthy
+  /api/v1/jobs:
+    post:
+      summary: Upload a video and create a processing job
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [video, scale, quality]
+              properties:
+                video:
+                  type: string
+                  format: binary
+                scale:
+                  type: string
+                  enum: [2x, 4x, 1080p, 1440p, 4K]
+                quality:
+                  type: string
+                  enum: [fast, balanced, quality, max]
+      responses:
+        '202':
+          description: Job accepted
+        '400':
+          description: Invalid request
+        '413':
+          description: Upload too large
+        '415':
+          description: Unsupported video format
+  /api/v1/jobs/{jobId}:
+    get:
+      summary: Get job status
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Job status
+        '404':
+          description: Job not found
+  /api/v1/jobs/{jobId}/progress:
+    get:
+      summary: Get lightweight progress status
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Job progress
+        '404':
+          description: Job not found
+  /api/v1/jobs/{jobId}/download:
+    get:
+      summary: Download completed output
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Video output
+        '404':
+          description: Job not found or output missing
+        '409':
+          description: Job not completed
+components:
+  parameters:
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
