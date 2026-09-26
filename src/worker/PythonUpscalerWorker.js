@@ -4,6 +4,7 @@ import path from "node:path";
 import { env } from "../config/env.js";
 import { AppError } from "../utils/errors.js";
 import { WorkerContract } from "./WorkerContract.js";
+import { logger } from "../utils/logger.js";
 
 function appendArgScale(args, scale) {
   if (scale === "2x") {
@@ -117,6 +118,12 @@ export class PythonUpscalerWorker extends WorkerContract {
           reject(new AppError(499, "ENGINE_ABORTED", "Python upscaling process was aborted."));
         } else {
           const detail = (stderr.trim() || stdoutTail.trim()).slice(-4000);
+          logger.error("python_engine_exit", {
+            jobId: job.jobId,
+            exitCode: code,
+            stderr: stderr.trim().slice(-4000),
+            stdoutTail: stdoutTail.trim().slice(-4000),
+          });
           if (code === -9) {
             reject(new AppError(
               503,
