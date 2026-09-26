@@ -68,6 +68,7 @@ export class PythonUpscalerWorker extends WorkerContract {
 
     let stderr = "";
     let outputBuffer = "";
+    let stdoutTail = "";
 
     await new Promise((resolve, reject) => {
       const timeout = env.pythonEngineTimeoutMs > 0
@@ -93,7 +94,11 @@ export class PythonUpscalerWorker extends WorkerContract {
         }
       };
 
-      child.stdout.on("data", consume);
+      child.stdout.on("data", (chunk) => {
+        const text = chunk.toString("utf8");
+        stdoutTail = (stdoutTail + text).slice(-8000);
+        consume(chunk);
+      });
       child.stderr.on("data", (chunk) => {
         stderr = (stderr + chunk.toString("utf8")).slice(-8000);
       });
@@ -106,9 +111,20 @@ export class PythonUpscalerWorker extends WorkerContract {
       child.once("close", (code) => {
         if (timeout) clearTimeout(timeout);
         if (outputBuffer) consume("\n");
-        if (code === 0) resolve();
-        else if (code === null && signal.aborted) reject(new AppError(499, "ENGINE_ABORTED", "Python upscaling process was aborted."));
-        else reject(new AppError(500, "ENGINE_PROCESS_FAILED", `Python engine exited with code ${code}.`, stderr.trim().slice(-4000)));
+        if (code === 0) {
+          resolve();
+        } else if (code === null && signal.aborted) {
+          reject(new AppError(499, "ENGINE_ABORTED", "Python upscaling process was aborted."));
+        } else {
+          const detail = (stderr.trim() || stdoutTail.trim()).slice(-4000);
+          reject(new AppError(
+            500,
+            "ENGINE_PROCESS_FAILED",
+            detail
+              ? `Python engine exited with code ${code}: ${detail}`
+              : `Python engine exited with code ${code} without diagnostic output.`,
+          ));
+        }
       });
     });
 

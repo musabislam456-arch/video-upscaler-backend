@@ -59,7 +59,7 @@ class ValidationError(UpscalerError):
 
 logger = logging.getLogger("ClassicalUpscaler")
 if not logger.handlers:
-    handler = logging.StreamHandler(sys.stdout)
+    handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
     logger.addHandler(handler)
 logger.setLevel(logging.INFO)
@@ -1057,8 +1057,12 @@ def main() -> None:
     )
     if not args.json:
         print()
-    print(json.dumps(result, indent=2) if args.json else "")
+    if args.json:
+        print(json.dumps(result, indent=2))
     if not result.get("success"):
+        message = result.get("error_message") or "Python engine failed without a diagnostic message."
+        logger.error("ENGINE_FAILED: %s", message)
+        print(json.dumps({"success": False, "error_message": message}), file=sys.stderr)
         raise SystemExit(1)
 
 
