@@ -24,9 +24,19 @@ export function createApp({ jobService, queue }) {
       const exactAllowed = !normalizedOrigin || env.frontendOrigins.includes(normalizedOrigin);
       const patternAllowed = normalizedOrigin && env.frontendOriginPatterns.some((pattern) => {
         if (pattern === "*") return true;
-        if (pattern.startsWith("*.")) return normalizedOrigin.endsWith(pattern.slice(1));
-        if (pattern.endsWith(".*")) return normalizedOrigin.startsWith(pattern.slice(0, -1));
-        return normalizedOrigin === pattern;
+        try {
+          const allowedUrl = new URL(pattern.includes("*") ? pattern.replace("*.", "") : pattern);
+          const candidateUrl = new URL(normalizedOrigin);
+          if (pattern.includes("*.")) {
+            const suffix = pattern.replace("*.", "").replace(/\/$/, "");
+            return candidateUrl.protocol === allowedUrl.protocol &&
+              candidateUrl.hostname.endsWith(suffix) &&
+              candidateUrl.hostname !== suffix;
+          }
+          return normalizedOrigin === pattern;
+        } catch {
+          return false;
+        }
       });
       if (exactAllowed || patternAllowed) return callback(null, true);
       logger.warn("cors_origin_rejected", { origin: normalizedOrigin, allowedOrigins: env.frontendOrigins, allowedPatterns: env.frontendOriginPatterns });
