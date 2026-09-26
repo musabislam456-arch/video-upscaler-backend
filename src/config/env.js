@@ -40,6 +40,7 @@ export const env = {
   nodeEnv: process.env.NODE_ENV || "development",
   port: positiveInt(process.env.PORT, 8080, "PORT"),
   frontendOrigins: origins,
+  frontendOriginPatterns: originPatterns,
   maxUploadSizeMb: positiveInt(process.env.MAX_UPLOAD_SIZE_MB, 500, "MAX_UPLOAD_SIZE_MB"),
   maxConcurrentJobs: positiveInt(process.env.MAX_CONCURRENT_JOBS, 1, "MAX_CONCURRENT_JOBS"),
   jobTtlHours: positiveInt(process.env.JOB_TTL_HOURS, 24, "JOB_TTL_HOURS"),
