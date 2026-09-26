@@ -658,7 +658,7 @@ class FilterGraphBuilder:
         if meta.is_interlaced or deinterlace_request:
             filters.append("bwdif=mode=0:parity=-1:deint=1")
 
-        if quality_mode in {"quality", "max"}:
+        if quality_mode in {"quality", "max"} and not low_memory_mode:
             filters.append("format=yuv420p10le")
 
         # On very small RAM services, every low-memory quality mode uses a
@@ -705,7 +705,7 @@ class FilterGraphBuilder:
 
         if not simple_low_memory:
             filters.append("eq=contrast=1.0:brightness=0.0:gamma=1.0:saturation=1.0")
-        filters.append(f"format={'yuv420p10le' if quality_mode == 'max' else 'yuv420p'}")
+        filters.append(f"format={'yuv420p10le' if quality_mode == 'max' and not low_memory_mode else 'yuv420p'}")
         return ",".join(filters)
 
 
