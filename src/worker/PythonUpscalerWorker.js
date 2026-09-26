@@ -117,13 +117,22 @@ export class PythonUpscalerWorker extends WorkerContract {
           reject(new AppError(499, "ENGINE_ABORTED", "Python upscaling process was aborted."));
         } else {
           const detail = (stderr.trim() || stdoutTail.trim()).slice(-4000);
-          reject(new AppError(
-            500,
-            "ENGINE_PROCESS_FAILED",
-            detail
-              ? `Python engine exited with code ${code}: ${detail}`
-              : `Python engine exited with code ${code} without diagnostic output.`,
-          ));
+          if (code === -9) {
+            reject(new AppError(
+              503,
+              "ENGINE_MEMORY_KILLED",
+              "FFmpeg was terminated with SIGKILL (9), which is consistent with the host killing the process for memory pressure. The backend is configured for low-memory encoding, but the selected output may still exceed the available RAM.",
+              detail || undefined,
+            ));
+          } else {
+            reject(new AppError(
+              500,
+              "ENGINE_PROCESS_FAILED",
+              detail
+                ? `Python engine exited with code ${code}: ${detail}`
+                : `Python engine exited with code ${code} without diagnostic output.`,
+            ));
+          }
         }
       });
     });
