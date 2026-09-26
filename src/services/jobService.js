@@ -98,7 +98,7 @@ export class JobService {
         error: publicError,
         completedAt: new Date().toISOString(),
       });
-      logger.error("job_failed", { jobId, error: publicError, detail: error instanceof Error ? error.message : String(error) });
+      logger.error(`job_failed: ${publicError.code} - ${publicError.message}`, { jobId, detail: error instanceof Error ? error.message : String(error) });
     }
   }
 
