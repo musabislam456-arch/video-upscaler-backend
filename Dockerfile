@@ -32,6 +32,7 @@ RUN mkdir -p /app/storage/jobs
 ENV PORT=8080 \
     PYTHON_ENGINE_ENABLED=true \
     PYTHON_ENGINE_PATH=./ai_studio_code.py \
+    UPSCALE_LOW_MEMORY_MODE=true \
     TEMP_DIR=./storage/jobs \
     MAX_CONCURRENT_JOBS=1
 

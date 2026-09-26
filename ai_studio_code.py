@@ -65,6 +65,10 @@ if not logger.handlers:
 logger.setLevel(logging.INFO)
 
 
+def low_memory_mode_enabled() -> bool:
+    return os.getenv("UPSCALE_LOW_MEMORY_MODE", "false").strip().lower() == "true"
+
+
 @dataclass
 class VideoMetadata:
     filepath: Path
@@ -648,6 +652,7 @@ class FilterGraphBuilder:
         deinterlace_request: bool,
         multi_stage_4x: bool = False,
         enable_color_balance: bool = True,
+        low_memory_mode: bool = False,
     ) -> str:
         filters: List[str] = []
         if meta.is_interlaced or deinterlace_request:
@@ -656,14 +661,20 @@ class FilterGraphBuilder:
         if quality_mode in {"quality", "max"}:
             filters.append("format=yuv420p10le")
 
-        filters.append(f"sendcmd=f='{escape_filter_path(cmd_file)}'")
-        filters.append("hqdn3d=0:0:0:0")
+        # On very small RAM services, the Fast preset deliberately uses a simpler
+        # filter path. This avoids keeping large denoiser/deband/command buffers
+        # alive at the same time as the 1440p/4K encoder.
+        simple_fast = low_memory_mode and quality_mode == "fast"
 
-        if profile.needs_deband or quality_mode == "max":
-            threshold = 0.03 + (0.015 if profile.exposure_category in {"DARK", "VERY_DARK"} else 0.0)
-            filters.append(
-                f"deband=1thr={threshold:.3f}:2thr={threshold:.3f}:3thr={threshold:.3f}:range=16:blur=1"
-            )
+        if not simple_fast:
+            filters.append(f"sendcmd=f='{escape_filter_path(cmd_file)}'")
+            filters.append("hqdn3d=0:0:0:0")
+
+            if profile.needs_deband or quality_mode == "max":
+                threshold = 0.03 + (0.015 if profile.exposure_category in {"DARK", "VERY_DARK"} else 0.0)
+                filters.append(
+                    f"deband=1thr={threshold:.3f}:2thr={threshold:.3f}:3thr={threshold:.3f}:range=16:blur=1"
+                )
 
         if multi_stage_4x and quality_mode == "max":
             mid_w = max(2, (meta.width * 2) // 2 * 2)
@@ -674,9 +685,12 @@ class FilterGraphBuilder:
         else:
             filters.append(f"scale={target_w}:{target_h}:flags={scaler}+accurate_rnd")
 
-        filters.append("cas=strength=0:planes=1")
+        if not simple_fast:
+            filters.append("cas=strength=0:planes=1")
+        else:
+            filters.append("cas=strength=0.10:planes=1")
 
-        if enable_color_balance and profile.color_cast_detected:
+        if (not simple_fast) and enable_color_balance and profile.color_cast_detected:
             strength = 0.5
             rb = float(np.clip((-profile.color_cast_rb / 255.0) * 2.0 * strength, -0.15, 0.15))
             gg = float(np.clip((-profile.color_cast_g / 255.0) * 2.0 * strength, -0.12, 0.12))
@@ -687,7 +701,8 @@ class FilterGraphBuilder:
                 f"rh={rb * 0.30:.3f}:gh={gg * 0.30:.3f}:bh={-rb * 0.30:.3f}"
             )
 
-        filters.append("eq=contrast=1.0:brightness=0.0:gamma=1.0:saturation=1.0")
+        if not simple_fast:
+            filters.append("eq=contrast=1.0:brightness=0.0:gamma=1.0:saturation=1.0")
         filters.append(f"format={'yuv420p10le' if quality_mode == 'max' else 'yuv420p'}")
         return ",".join(filters)
 
@@ -770,6 +785,7 @@ class VideoUpscalerEngine:
         self.deinterlace = deinterlace
         self.auto_exposure = auto_exposure
         self.auto_color_balance = auto_color_balance
+        self.low_memory_mode = low_memory_mode_enabled()
 
         ready, details = check_environment()
         if not ready:
@@ -806,8 +822,9 @@ class VideoUpscalerEngine:
         report = lambda p, info=None: progress_callback(float(p), info or {}) if progress_callback else None
 
         logger.info(
-            "Target: %dx%d -> %dx%d (%s)",
-            self.meta.width, self.meta.height, self.out_w, self.out_h, self.quality_mode.upper()
+            "Target: %dx%d -> %dx%d (%s, low-memory=%s)",
+            self.meta.width, self.meta.height, self.out_w, self.out_h,
+            self.quality_mode.upper(), self.low_memory_mode
         )
         report(5.0, {"phase": "probe", "status": "Probing source video"})
 
@@ -838,17 +855,26 @@ class VideoUpscalerEngine:
                 deinterlace_request=self.deinterlace,
                 multi_stage_4x=is_4x,
                 enable_color_balance=self.auto_color_balance,
+                low_memory_mode=self.low_memory_mode,
             )
 
             vcodec = "libx265" if self.codec in {"hevc", "h265"} else "libx264"
-            preset = {"fast": "faster", "balanced": "medium", "quality": "slow", "max": "veryslow"}.get(
-                self.quality_mode, "medium"
-            )
+            if self.low_memory_mode:
+                preset = {"fast": "ultrafast", "balanced": "veryfast", "quality": "faster", "max": "fast"}.get(
+                    self.quality_mode, "veryfast"
+                )
+            else:
+                preset = {"fast": "faster", "balanced": "medium", "quality": "slow", "max": "veryslow"}.get(
+                    self.quality_mode, "medium"
+                )
 
             cmd = [
                 "ffmpeg", "-y",
                 "-progress", "pipe:1",
                 "-nostats", "-loglevel", "warning",
+                "-threads", "1",
+                "-filter_threads", "1",
+                "-filter_complex_threads", "1",
                 "-i", str(self.meta.filepath),
                 "-filter_complex", f"[0:v]{filtergraph}[vout]",
                 "-map", "[vout]",
@@ -856,6 +882,9 @@ class VideoUpscalerEngine:
                 "-crf", str(self.crf),
                 "-preset", preset,
             ]
+            if self.low_memory_mode and self.quality_mode == "fast" and vcodec == "libx264":
+                # Reduce x264's frame/lookahead buffering on 512 MB-class containers.
+                cmd += ["-tune", "zerolatency", "-x264-params", "threads=1:rc-lookahead=0:ref=1:bframes=0"]
             cmd += build_color_args(self.meta)
 
             if self.meta.audio_stream_count:
