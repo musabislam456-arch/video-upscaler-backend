@@ -25,6 +25,7 @@ const origins = (process.env.FRONTEND_ORIGINS || "http://localhost:3000")
   .filter(Boolean);
 
 const tempDir = process.env.TEMP_DIR || "./storage/jobs";
+const pythonEnginePath = process.env.PYTHON_ENGINE_PATH || "./ai_studio_code.py";
 
 export const env = {
   nodeEnv: process.env.NODE_ENV || "development",
@@ -35,9 +36,9 @@ export const env = {
   jobTtlHours: positiveInt(process.env.JOB_TTL_HOURS, 24, "JOB_TTL_HOURS"),
   cleanupIntervalMs: positiveInt(process.env.CLEANUP_INTERVAL_MINUTES, 30, "CLEANUP_INTERVAL_MINUTES") * 60_000,
   tempDir: path.resolve(process.cwd(), tempDir),
-  pythonEngineEnabled: String(process.env.PYTHON_ENGINE_ENABLED).toLowerCase() === "true",
+  pythonEngineEnabled: String(process.env.PYTHON_ENGINE_ENABLED ?? "true").toLowerCase() === "true",
   pythonExecutable: process.env.PYTHON_EXECUTABLE || "python",
-  pythonEnginePath: process.env.PYTHON_ENGINE_PATH ? path.resolve(process.cwd(), process.env.PYTHON_ENGINE_PATH) : "",
+  pythonEnginePath: path.resolve(process.cwd(), pythonEnginePath),
   pythonEngineTimeoutMs: nonNegativeInt(process.env.PYTHON_ENGINE_TIMEOUT_MS, 86_400_000, "PYTHON_ENGINE_TIMEOUT_MS"),
 };
 

@@ -5,24 +5,46 @@ import { env } from "../config/env.js";
 import { AppError } from "../utils/errors.js";
 import { WorkerContract } from "./WorkerContract.js";
 
+function appendArgScale(args, scale) {
+  if (scale === "2x") {
+    args.push("--scale", "2");
+  } else if (scale === "4x") {
+    args.push("--scale", "4");
+  } else if (scale === "1080p") {
+    args.push("--height", "1080");
+  } else if (scale === "1440p") {
+    args.push("--height", "1440");
+  } else if (scale === "4K") {
+    args.push("--height", "2160");
+  } else {
+    throw new AppError(400, "INVALID_SCALE", "Unsupported scale option.");
+  }
+}
+
+function parseEngineProgress(text) {
+  const match = text.match(/Progress:\s*([0-9]+(?:\.[0-9]+)?)%.*?Speed:\s*([^\s|]+)/);
+  if (!match) return null;
+  const progress = Number(match[1]);
+  const speed = match[2];
+  return {
+    progress: Number.isFinite(progress) ? progress : null,
+    status: `Encoding · ${speed}`,
+  };
+}
+
 /**
- * Adapter for the future ai_studio_code.py.
+ * Adapter for the supplied ai_studio_code.py.
  *
- * The Python engine is NOT included in this repository.
- * When enabled, the adapter invokes:
- *   python <script> --input <path> --output <path> --scale <scale> --quality <quality> --job-id <id>
+ * Current CLI:
+ *   python ai_studio_code.py -i <input> -o <output> [--scale 2|4 | --height 1080|1440|2160] --quality <quality>
  *
- * The script may emit newline-delimited JSON progress events:
- *   {"type":"progress","progress":42,"status":"..."}
- *   {"type":"status","progress":42,"status":"..."}
- *   {"type":"error","code":"ENGINE_ERROR","message":"..."}
- *
- * The exact adapter can be adjusted later when the real script's interface is supplied.
+ * The engine writes human-readable progress updates using carriage returns.
+ * We parse those updates without requiring any changes to the engine's CLI.
  */
 export class PythonUpscalerWorker extends WorkerContract {
   async run({ job, inputPath, outputPath, updateProgress, signal }) {
-    if (!env.pythonEngineEnabled || !env.pythonEnginePath) {
-      throw new AppError(503, "ENGINE_NOT_CONFIGURED", "Python upscaling engine is not configured yet. Add the supplied ai_studio_code.py and enable PYTHON_ENGINE_ENABLED.");
+    if (!env.pythonEngineEnabled) {
+      throw new AppError(503, "ENGINE_DISABLED", "Python upscaling engine is disabled.");
     }
 
     await fs.access(env.pythonEnginePath);
@@ -30,12 +52,13 @@ export class PythonUpscalerWorker extends WorkerContract {
 
     const args = [
       env.pythonEnginePath,
-      "--input", inputPath,
-      "--output", outputPath,
-      "--scale", job.scale,
+      "-i", inputPath,
+      "-o", outputPath,
       "--quality", job.quality,
-      "--job-id", job.jobId,
     ];
+    appendArgScale(args, job.scale);
+
+    updateProgress({ progress: 3, status: "Starting CPU upscaling engine" });
 
     const child = spawn(env.pythonExecutable, args, {
       stdio: ["ignore", "pipe", "pipe"],
@@ -44,55 +67,56 @@ export class PythonUpscalerWorker extends WorkerContract {
     });
 
     let stderr = "";
-    let stdoutBuffer = "";
-    let settled = false;
-
-    child.stdout.on("data", (chunk) => {
-      stdoutBuffer += chunk.toString("utf8");
-      const lines = stdoutBuffer.split(/\r?\n/);
-      stdoutBuffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const event = JSON.parse(line);
-          if (event.type === "progress" || event.type === "status") {
-            updateProgress({ progress: Number(event.progress), status: String(event.status || "Processing") });
-          }
-          if (event.type === "error") {
-            stderr += `${event.code || "ENGINE_ERROR"}: ${event.message || "Engine error"}\n`;
-          }
-        } catch {
-          // Human-readable engine output is ignored; structured JSON is the progress channel.
-        }
-      }
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8").slice(-4000);
-    });
+    let outputBuffer = "";
 
     await new Promise((resolve, reject) => {
-      const timeout = env.pythonEngineTimeoutMs > 0 ? setTimeout(() => {
-        child.kill("SIGTERM");
-        reject(new AppError(504, "ENGINE_TIMEOUT", "Python upscaling worker timed out."));
-      }, env.pythonEngineTimeoutMs) : null;
+      const timeout = env.pythonEngineTimeoutMs > 0
+        ? setTimeout(() => {
+            child.kill("SIGTERM");
+            reject(new AppError(504, "ENGINE_TIMEOUT", "Python upscaling worker timed out."));
+          }, env.pythonEngineTimeoutMs)
+        : null;
+
+      const consume = (chunk) => {
+        outputBuffer += chunk.toString("utf8");
+        const parts = outputBuffer.split(/[\r\n]+/);
+        outputBuffer = parts.pop() || "";
+
+        for (const part of parts) {
+          const parsed = parseEngineProgress(part);
+          if (!parsed || parsed.progress == null) continue;
+          const mapped = 5 + (Math.min(100, Math.max(0, parsed.progress)) * 0.95);
+          updateProgress({
+            progress: Math.min(100, mapped),
+            status: parsed.status,
+          });
+        }
+      };
+
+      child.stdout.on("data", consume);
+      child.stderr.on("data", (chunk) => {
+        stderr = (stderr + chunk.toString("utf8")).slice(-8000);
+      });
 
       child.once("error", (error) => {
         if (timeout) clearTimeout(timeout);
-        reject(error);
+        reject(new AppError(500, "ENGINE_START_FAILED", "Unable to start the Python upscaling process.", error.message));
       });
+
       child.once("close", (code) => {
         if (timeout) clearTimeout(timeout);
+        if (outputBuffer) consume("\n");
         if (code === 0) resolve();
+        else if (code === null && signal.aborted) reject(new AppError(499, "ENGINE_ABORTED", "Python upscaling process was aborted."));
         else reject(new AppError(500, "ENGINE_PROCESS_FAILED", `Python engine exited with code ${code}.`, stderr.trim().slice(-4000)));
       });
     });
 
     if (!(await fileIsReady(outputPath))) {
-      throw new AppError(500, "ENGINE_OUTPUT_MISSING", "Python engine finished without producing the expected output file.");
+      throw new AppError(500, "ENGINE_OUTPUT_MISSING", "Python engine finished without producing a non-empty output file.");
     }
 
-    if (!settled) settled = true;
+    updateProgress({ progress: 99.5, status: "Validating output" });
     return { outputPath };
   }
 }

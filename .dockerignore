@@ -1,0 +1,12 @@
+node_modules
+.next
+.git
+.env
+.env.local
+npm-debug.log*
+storage/jobs/*
+storage/jobs/.gitkeep
+*.zip
+*.log
+__pycache__
+.pytest_cache

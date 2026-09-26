@@ -1,45 +1,107 @@
 # Video Upscaler — Backend
 
-Node.js + Express REST API designed for Railway. It owns uploads, job lifecycle, progress, local output delivery, cleanup, and the future Python-engine seam.
+Node.js + Express REST API for a zero-AI, CPU-only video upscaling service. The supplied `ai_studio_code.py` is included and invoked through an isolated worker adapter.
 
-## Important
-The actual ai_studio_code.py engine is intentionally NOT included or invented. Until the real engine is supplied, submitted jobs end in failed state with ENGINE_NOT_CONFIGURED. There are no mock outputs or fake successful jobs.
+## Processing
 
-## Local
-Install Node.js 22+, copy .env.example to .env, keep PYTHON_ENGINE_ENABLED=false, then run:
+Next.js/Vercel
+→ Node.js + Express/Railway
+→ bounded in-process queue
+→ Python worker adapter
+→ ai_studio_code.py
+→ FFmpeg + OpenCV + NumPy
+→ output video
+→ download API
 
+No AI/ML, GPU, or neural-network dependency is used.
+
+## Local development
+
+Requirements:
+- Node.js 22+
+- Python 3.11+
+- FFmpeg + ffprobe in PATH
+
+Windows setup:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+ffmpeg -version
+ffprobe -version
 npm install
 npm run dev
+```
 
-API: http://localhost:8080
-Health: http://localhost:8080/health
+API: `http://localhost:8080`
 
-## Railway
-Use npm start as the start command. Recommended variables: NODE_ENV=production, FRONTEND_ORIGINS=https://YOUR-VERCEL-DOMAIN.vercel.app, MAX_UPLOAD_SIZE_MB=500, MAX_CONCURRENT_JOBS=1, JOB_TTL_HOURS=24, CLEANUP_INTERVAL_MINUTES=30, TEMP_DIR=./storage/jobs, PYTHON_ENGINE_ENABLED=false.
+Use `.env.example` as the starting point. On Windows the Python executable is normally `python`; Railway's Docker image uses `/opt/venv/bin/python`.
 
-## Frontend connection
-Set NEXT_PUBLIC_API_BASE_URL in Vercel to your Railway backend URL and allow that exact origin in FRONTEND_ORIGINS.
+## Railway deployment
+
+Railway detects a root-level `Dockerfile` automatically. This image installs Node, Python, NumPy, OpenCV and FFmpeg.
+
+Recommended variables:
+
+```text
+NODE_ENV=production
+FRONTEND_ORIGINS=https://YOUR-VERCEL-DOMAIN.vercel.app
+MAX_UPLOAD_SIZE_MB=500
+MAX_CONCURRENT_JOBS=1
+JOB_TTL_HOURS=24
+CLEANUP_INTERVAL_MINUTES=30
+TEMP_DIR=./storage/jobs
+PYTHON_ENGINE_ENABLED=true
+PYTHON_EXECUTABLE=/opt/venv/bin/python
+PYTHON_ENGINE_PATH=./ai_studio_code.py
+PYTHON_ENGINE_TIMEOUT_MS=86400000
+```
+
+Connect the GitHub repo to the Railway service. Each push to the tracked branch can trigger a new deployment.
 
 ## API
-GET /health
-POST /api/v1/jobs
-GET /api/v1/jobs/:jobId
-GET /api/v1/jobs/:jobId/progress
-GET /api/v1/jobs/:jobId/download
 
-Supported: .mp4 .mov .mkv .webm .avi
+- `GET /health`
+- `POST /api/v1/jobs`
+- `GET /api/v1/jobs/:jobId`
+- `GET /api/v1/jobs/:jobId/progress`
+- `GET /api/v1/jobs/:jobId/download`
 
-## Future Python engine
-The adapter is src/worker/PythonUpscalerWorker.js. When the real script is supplied, inspect its actual interface and adjust the adapter only where possible. No Python-specific logic is needed in the frontend or REST layer.
+Upload field: `video`
 
-Expected current adapter command:
-python ai_studio_code.py --input <input> --output <output> --scale <scale> --quality <quality> --job-id <jobId>
+Scale values:
+- `2x`
+- `4x`
+- `1080p`
+- `1440p`
+- `4K`
 
-## Architecture
-Current realtime transport is HTTP polling. Job state is queued | processing | completed | failed with progress 0..100. A future SSE/WebSocket layer can publish the same model.
+Quality values:
+- `fast`
+- `balanced`
+- `quality`
+- `max`
 
-## Storage
-LocalJobStorage is the current implementation. Replace it later with Supabase Storage/S3-compatible storage while keeping the storage boundary. Replace InMemoryJobStore with Supabase/Postgres for durable multi-instance job metadata.
+## Python engine mapping
 
-## Operational limitation
-The job store is in memory and Railway local disk is ephemeral. That is intentional for the first zero-budget scaffold; durable storage should be added before multi-instance production use.
+The Node adapter maps frontend choices to the actual CLI supported by the Python engine:
+
+- 2x → `--scale 2`
+- 4x → `--scale 4`
+- 1080p → `--height 1080`
+- 1440p → `--height 1440`
+- 4K → `--height 2160`
+
+The worker also parses the engine's carriage-return progress output and maps it into the existing job progress endpoint.
+
+## Storage / zero-budget limitation
+
+The current job metadata store is in memory and active job files use local storage. On Railway, local filesystem data is ephemeral unless a persistent volume or object storage is used. The Railway free plan currently exposes 0.5 GB volume storage, so large source/output videos can exceed the free storage budget.
+
+For the first zero-budget test, use small sample videos and keep `MAX_CONCURRENT_JOBS=1`. For larger production files, move media to object storage and job metadata to durable storage.
+
+## No fake processing
+
+A job is marked completed only if the Python process exits successfully and the expected output file exists and passes post-validation. There is no mock output path.

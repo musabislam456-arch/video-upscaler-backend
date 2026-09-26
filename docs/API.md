@@ -1,41 +1,55 @@
 # API Contract
 
-Base URL locally: http://localhost:8080
-
-All JSON errors use an error object with code and message.
-
-## GET /health
-Returns service and queue health.
+Base URL locally: `http://localhost:8080`
 
 ## POST /api/v1/jobs
-multipart/form-data upload.
 
-Fields:
-- video: one supported video file
-- scale: 2x | 4x | 1080p | 1440p | 4K
-- quality: fast | balanced | quality | max
+`multipart/form-data`
 
-Returns HTTP 202 with a unique jobId and initial queued state.
+- `video`: one video file
+- `scale`: `2x | 4x | 1080p | 1440p | 4K`
+- `quality`: `fast | balanced | quality | max`
+
+Returns HTTP 202 and a `jobId`.
 
 ## GET /api/v1/jobs/:jobId
-Returns the full current job representation.
+
+Returns the current job object.
 
 ## GET /api/v1/jobs/:jobId/progress
-Returns a lightweight polling-friendly progress object. The frontend polls this endpoint every 1.5 seconds. A future SSE/WebSocket layer can publish the same progress fields without changing job semantics.
+
+Polling-friendly response:
+
+```json
+{
+  "jobId": "uuid",
+  "state": "processing",
+  "progress": 42.5,
+  "status": "Encoding · 0.8x",
+  "updatedAt": "2026-09-26T00:00:00.000Z",
+  "error": null
+}
+```
 
 ## GET /api/v1/jobs/:jobId/download
-Returns the completed output as an attachment. It returns 409 until the job is completed.
 
-## Job states
+Streams the completed output as a download. Returns 409 until the job completes.
+
+## Job lifecycle
+
+```
 queued -> processing -> completed
                     -> failed
+```
 
-completed means the worker returned successfully and the expected output file exists and is non-empty.
+## Worker mapping
 
-## Worker integration contract
-The adapter currently expects:
-python ai_studio_code.py --input <input> --output <output> --scale <scale> --quality <quality> --job-id <jobId>
+```
+2x      -> ai_studio_code.py --scale 2
+4x      -> ai_studio_code.py --scale 4
+1080p   -> ai_studio_code.py --height 1080
+1440p   -> ai_studio_code.py --height 1440
+4K      -> ai_studio_code.py --height 2160
+```
 
-Optional progress can be emitted as JSONL on stdout using type=progress or type=status with progress 0..100.
-
-Exit code 0 plus a non-empty output path is required for completion.
+The worker does not pass arbitrary filesystem paths from the browser to Python. Input/output paths are created server-side inside a unique job directory.

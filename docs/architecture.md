@@ -1,33 +1,51 @@
 # Architecture
 
-Browser / Next.js on Vercel -> Node.js + Express on Railway -> JobService -> Queue -> WorkerContract/Python adapter -> future ai_studio_code.py -> FFmpeg/OpenCV.
+```
+Next.js/Vercel
+     |
+     | HTTPS REST
+     v
+Node.js + Express/Railway
+     |
+     +--> JobService
+     |       |
+     |       +--> InMemoryJobStore
+     |       +--> LocalJobStorage
+     |       +--> JobQueue (concurrency limited)
+     |
+     +--> PythonUpscalerWorker
+             |
+             +--> ai_studio_code.py
+                    |
+                    +--> FFmpeg
+                    +--> OpenCV
+                    +--> NumPy
+```
 
-## Boundaries
+## Engine boundary
 
-### JobService
-Owns job lifecycle and API response shape. It does not know the internal upscaling algorithm.
+The Node API does not contain the upscaling algorithm. `PythonUpscalerWorker` is the adapter and can be replaced later without changing the frontend API.
 
-### JobQueue
-Currently an in-process concurrency-limited queue. Keep it small for a zero-budget Railway deployment. A future Redis/BullMQ or database-backed queue can replace the implementation behind the enqueue concept.
+## Scale mapping
 
-### WorkerContract
-The stable Python integration seam. A worker receives input/output paths, job settings, a cancellation signal, and a progress callback.
+Fixed-height targets preserve source aspect ratio because the Python engine computes the other dimension automatically:
 
-### LocalJobStorage
-Per-job directories prevent name collisions and make path validation straightforward. The storage interface can later be replaced by Supabase Storage or S3-compatible object storage.
+- 1080p → height 1080
+- 1440p → height 1440
+- 4K → height 2160
 
-### JobStore
-Currently in memory. For jobs that must survive backend restarts, replace it with a database repository implementing the same create/get/update/list/delete semantics. Supabase/Postgres is the intended future integration point.
+## Progress
 
-## Security notes
+The Python engine emits carriage-return progress lines during FFmpeg encoding. The adapter converts these to job progress and status messages. The HTTP client polls `/progress` until the job reaches `completed` or `failed`.
 
-- Original filenames are not used as filesystem paths.
-- Every job gets a cryptographically random UUID directory.
-- Resolved paths are checked to remain inside the job directory.
-- Multer enforces the backend upload size limit.
-- Upload extensions and MIME types are validated.
-- HTTP security headers are enabled with Helmet.
-- CORS requires explicit production origins.
-- API requests are rate limited.
-- Python processes are spawned without a shell.
-- Cleanup removes completed/failed data after the configured TTL.
+## Deployment
+
+Railway uses the root-level Dockerfile automatically. The Docker image installs the required Python runtime, OpenCV, NumPy and FFmpeg.
+
+## Storage evolution
+
+Local files are the current implementation boundary. Railway Volumes can make local files persistent for a single service instance; an S3-compatible/Railway storage bucket is better for larger media. The job metadata store should eventually move from memory to Postgres/Supabase for restart and multi-instance durability.
+
+## Concurrency
+
+`MAX_CONCURRENT_JOBS=1` is deliberate for a zero-budget CPU deployment. Multiple workers/instances should be introduced only after durable job metadata and a shared queue/storage layer are added.
