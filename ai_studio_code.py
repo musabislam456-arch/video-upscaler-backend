@@ -661,12 +661,13 @@ class FilterGraphBuilder:
         if quality_mode in {"quality", "max"}:
             filters.append("format=yuv420p10le")
 
-        # On very small RAM services, the Fast preset deliberately uses a simpler
-        # filter path. This avoids keeping large denoiser/deband/command buffers
-        # alive at the same time as the 1440p/4K encoder.
-        simple_fast = low_memory_mode and quality_mode == "fast"
+        # On very small RAM services, every low-memory quality mode uses a
+        # deliberately simple filter path. This prevents the adaptive
+        # sendcmd/hqdn3d/deband pipeline from competing with a 1440p/4K encoder
+        # for the same ~512 MB container memory.
+        simple_low_memory = low_memory_mode
 
-        if not simple_fast:
+        if not simple_low_memory:
             filters.append(f"sendcmd=f='{escape_filter_path(cmd_file)}'")
             filters.append("hqdn3d=0:0:0:0")
 
@@ -685,12 +686,13 @@ class FilterGraphBuilder:
         else:
             filters.append(f"scale={target_w}:{target_h}:flags={scaler}+accurate_rnd")
 
-        if not simple_fast:
+        if not simple_low_memory:
             filters.append("cas=strength=0:planes=1")
         else:
-            filters.append("cas=strength=0.10:planes=1")
+            # Keep a very small classical edge enhancement after scaling.
+            filters.append("cas=strength=0.08:planes=1")
 
-        if (not simple_fast) and enable_color_balance and profile.color_cast_detected:
+        if (not simple_low_memory) and enable_color_balance and profile.color_cast_detected:
             strength = 0.5
             rb = float(np.clip((-profile.color_cast_rb / 255.0) * 2.0 * strength, -0.15, 0.15))
             gg = float(np.clip((-profile.color_cast_g / 255.0) * 2.0 * strength, -0.12, 0.12))
@@ -701,7 +703,7 @@ class FilterGraphBuilder:
                 f"rh={rb * 0.30:.3f}:gh={gg * 0.30:.3f}:bh={-rb * 0.30:.3f}"
             )
 
-        if not simple_fast:
+        if not simple_low_memory:
             filters.append("eq=contrast=1.0:brightness=0.0:gamma=1.0:saturation=1.0")
         filters.append(f"format={'yuv420p10le' if quality_mode == 'max' else 'yuv420p'}")
         return ",".join(filters)
@@ -882,7 +884,7 @@ class VideoUpscalerEngine:
                 "-crf", str(self.crf),
                 "-preset", preset,
             ]
-            if self.low_memory_mode and self.quality_mode == "fast" and vcodec == "libx264":
+            if self.low_memory_mode and vcodec == "libx264":
                 # Reduce x264's frame/lookahead buffering on 512 MB-class containers.
                 cmd += ["-tune", "zerolatency", "-x264-params", "threads=1:rc-lookahead=0:ref=1:bframes=0"]
             cmd += build_color_args(self.meta)
